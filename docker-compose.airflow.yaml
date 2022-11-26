@@ -1,0 +1,93 @@
+version: '3.4'
+
+x-common:
+  &common
+  build:
+    context: ./airflow
+    dockerfile: ./Dockerfile
+  #  image: apache/airflow:2.3.0
+  user: "${AIRFLOW_UID}:0"
+  env_file:
+    - .env
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - /var/run/docker.sock:/var/run/docker.sock
+
+x-depends-on:
+  &depends-on
+  depends_on:
+    postgres:
+      condition: service_healthy
+    airflow-init:
+      condition: service_completed_successfully
+
+services:
+  clickhouse:
+    image: yandex/clickhouse-server
+    container_name: "clickhouse"
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+      - "9009:9009"
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ./clickhouse:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+
+  clickhouseclient:
+    image: yandex/clickhouse-client
+    container_name: "clickhouseclient"
+    command: [ '--host', 'clickhouse' ]
+
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    env_file:
+      - .env
+
+  scheduler:
+    <<: *common
+    <<: *depends-on
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: on-failure
+    ports:
+      - "8793:8793"
+
+  webserver:
+    <<: *common
+    <<: *depends-on
+    container_name: airflow-webserver
+    restart: always
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+
+  airflow-init:
+    <<: *common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version

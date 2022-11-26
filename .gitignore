@@ -1,0 +1,8 @@
+target/
+.idea/
+.bsp/
+null/*
+.DS_Store
+logs/*
+venv/*
+airflow/dags_test/*
